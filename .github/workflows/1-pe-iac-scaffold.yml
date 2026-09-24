@@ -1,0 +1,220 @@
+name: "Step PE-1 # Detect IaC Scaffold Complete"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "infra/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  find_exercise:
+    name: Find Exercise Issue
+    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.9.3
+
+  check_step_work:
+    name: Check step work
+    runs-on: ubuntu-latest
+    needs: [find_exercise]
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get response templates
+        uses: actions/checkout@v5
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.9.3
+
+      - name: Update comment - checking work
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/checking-work.md \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # START: Check practical exercise
+
+      - name: Check required files exist
+        id: check-files
+        continue-on-error: true
+        run: |
+          missing=""
+          for f in "infra/stacks/dev/main.tf"; do
+            if [ ! -f "$f" ]; then
+              missing="$missing $f"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required files:$missing"
+            exit 1
+          fi
+          echo "All required IaC files present."
+
+      - name: Check AWS_ROLE_ARN secret is configured
+        id: check-secret
+        continue-on-error: true
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_ROLE_ARN" ]; then
+            echo "::error::AWS_ROLE_ARN secret is not set. Go to Settings → Secrets and variables → Actions and add it before proceeding to Step 4."
+            exit 1
+          fi
+          echo "AWS_ROLE_ARN secret is configured."
+
+      - name: Check module source references golden-path module
+        id: check-module-source
+        continue-on-error: true
+        run: |
+          if ! grep -q 'slalom-terraform-pe-lab-ecs-app' infra/stacks/dev/main.tf; then
+            echo "::error::infra/stacks/dev/main.tf must reference the golden-path module: github.com/Slalom/slalom-terraform-pe-lab-ecs-app"
+            exit 1
+          fi
+          echo "Module source references slalom-terraform-pe-lab-ecs-app."
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.7.0"
+
+      - name: Terraform init and validate
+        id: check-terraform-validate
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global url."https://oauth2:${GITHUB_TOKEN}@github.com".insteadOf "https://github.com"
+          cd infra/stacks/dev
+          terraform init -backend=false
+          terraform validate
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: v0.50.3
+
+      - name: tflint check
+        run: |
+          tflint --chdir=infra/stacks/dev --format compact || true
+
+      - name: Run checkov security scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra/stacks/dev
+          framework: terraform
+          soft_fail: true
+          skip_check: CKV_TF_1
+          output_format: cli
+          output_file_path: checkov-results.txt
+        continue-on-error: true
+
+      - name: Post checkov summary
+        run: |
+          echo "## Checkov Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat checkov-results.txt >> $GITHUB_STEP_SUMMARY || echo "No results file" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Build message - step results
+        id: build-message-step-results
+        uses: skills/action-text-variables@v4
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-results-table.md
+          template-vars: |
+            step_number: PE-1
+            passed: ${{ steps.check-files.outcome == 'success' && steps.check-module-source.outcome == 'success' && steps.check-terraform-validate.outcome == 'success' && steps.check-secret.outcome == 'success' }}
+            results_table:
+              - description: "infra/stacks/dev/main.tf is present"
+                passed: ${{ steps.check-files.outcome == 'success' }}
+              - description: "Dev stack references slalom-terraform-pe-lab-ecs-app module"
+                passed: ${{ steps.check-module-source.outcome == 'success' }}
+              - description: "Terraform init and validate passes"
+                passed: ${{ steps.check-terraform-validate.outcome == 'success' }}
+              - description: "AWS_ROLE_ARN secret is configured (required for Step 3 OIDC deploy)"
+                passed: ${{ steps.check-secret.outcome == 'success' }}
+
+      - name: Create comment - step results
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$COMMENT_BODY" \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ steps.build-message-step-results.outputs.updated-text }}
+
+      - name: Fail job if required checks failed
+        if: |
+          steps.check-files.outcome != 'success' ||
+          steps.check-module-source.outcome != 'success' ||
+          steps.check-terraform-validate.outcome != 'success' ||
+          steps.check-secret.outcome != 'success'
+        run: exit 1
+
+      # END: Check practical exercise
+
+      - name: Build message - step finished
+        id: build-message-step-finish
+        uses: skills/action-text-variables@v4
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-finished-prepare-next-step.md
+          template-vars: |
+            next_step_number: PE-2
+
+      - name: Update comment - step finished
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$ISSUE_BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_BODY: ${{ steps.build-message-step-finish.outputs.updated-text }}
+
+  post_next_step_content:
+    name: Post next step content
+    needs: [find_exercise, check_step_work]
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get response templates
+        uses: actions/checkout@v5
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.9.3
+
+      - name: Create comment - add step content
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file ".github/steps/pe-2-ci-pipeline.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create comment - watching for progress
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Disable current workflow and enable next one
+        run: |
+          gh workflow disable "1-pe-iac-scaffold.yml"
+          gh workflow enable "2-pe-ci-pipeline.yml"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,88 @@
+name: "Step PE-0 # Start Exercise"
+
+# Fires when a new repo is created from this template.
+# GitHub triggers the first push automatically on template creation.
+on:
+  push:
+    branches:
+      - main
+      - 36-migrate-lab-issue-management-to-github-exercise-toolkit
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+env:
+  STEP_1_FILE: ".github/steps/pe-1-iac-scaffold.md"
+
+jobs:
+  start_exercise:
+    if: |
+      !github.event.repository.is_template
+    name: Start Exercise
+    uses: skills/exercise-toolkit/.github/workflows/start-exercise.yml@v0.9.3
+    with:
+      exercise-title: "PE — Ship a Mini Golden Path"
+      intro-message: "Welcome to the Practical Exercise! Starting from a running Todo API, you will use GitHub Copilot in Agent mode to build every layer of a paved road — Terraform IaC module, reusable CI/CD pipeline, and a clean PR with evidence. Work through the 4 steps in order and open PRs to advance."
+
+  post_next_step_content:
+    name: Post next step content
+    runs-on: ubuntu-latest
+    needs: [start_exercise]
+    env:
+      ISSUE_URL: ${{ needs.start_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get response templates
+        uses: actions/checkout@v5
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.9.3
+
+      - name: Build comment - add step content
+        id: build-comment
+        uses: skills/action-text-variables@v4
+        with:
+          template-file: ${{ env.STEP_1_FILE }}
+          template-vars: |
+            login: ${{ github.actor }}
+            full_repo_name: ${{ github.repository }}
+
+      - name: Create comment - add step content
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$ISSUE_BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_BODY: ${{ steps.build-comment.outputs.updated-text }}
+
+      - name: Create comment - watching for progress
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file "exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Disable all other workflows
+        run: |
+          for workflow_file in .github/workflows/*.yml; do
+            workflow_filename=$(basename "$workflow_file")
+            if [[ "$workflow_filename" != "0-pe-start-exercise.yml" ]]; then
+              echo "Disabling workflow: $workflow_filename"
+              gh workflow disable "$workflow_filename" || echo "Failed to disable $workflow_filename or already disabled"
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable next workflow
+        run: |
+          gh workflow enable "1-pe-iac-scaffold.yml"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

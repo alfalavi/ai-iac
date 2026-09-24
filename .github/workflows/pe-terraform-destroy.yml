@@ -1,0 +1,84 @@
+name: "Terraform Destroy — Todo Service Dev"
+
+on:
+  workflow_dispatch:
+    inputs:
+      terraform_version:
+        description: "Terraform version used for destroy"
+        required: false
+        type: string
+        default: "1.7.0"
+      confirm_destroy:
+        description: "Type DESTROY to confirm you want to tear down all infrastructure"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Validate confirmation input
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
+            echo "::error::Confirmation input must be exactly 'DESTROY'. Got: '${{ inputs.confirm_destroy }}'"
+            exit 1
+          fi
+          echo "Confirmation accepted. Proceeding with terraform destroy."
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Install Terraform
+        run: |
+          set -euo pipefail
+          TF_VERSION="${{ inputs.terraform_version }}"
+          curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o terraform.zip
+          unzip -o terraform.zip
+          sudo install terraform /usr/local/bin/terraform
+          terraform version
+
+      - name: Remove mock provider config
+        working-directory: infra/stacks/dev
+        run: |
+          set -euo pipefail
+          # Strip mock credentials and skip_* flags so real OIDC creds are used
+          sed -i '/access_key\|secret_key\|skip_credentials_validation\|skip_requesting_account_id\|skip_metadata_api_check\|skip_region_validation/d' main.tf
+          echo "Mock provider config removed."
+
+      - name: Terraform Init
+        working-directory: infra/stacks/dev
+        run: |
+          set -euo pipefail
+          terraform init -reconfigure \
+            -backend-config="key=todo-service/${{ github.repository_owner }}/dev/terraform.tfstate"
+
+      - name: Terraform Destroy
+        working-directory: infra/stacks/dev
+        run: terraform destroy -auto-approve
+
+      - name: Write destroy summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Stack | \`infra/stacks/dev\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Repository | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All ECS, ECR, ALB, and supporting resources for the todo-service dev environment have been destroyed." >> $GITHUB_STEP_SUMMARY

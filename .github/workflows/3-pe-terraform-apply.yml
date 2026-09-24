@@ -1,0 +1,374 @@
+name: "Step PE-3 # Detect Terraform Apply with OIDC"
+
+on:
+  # pull_request:
+  #   types: [opened, synchronize, reopened]
+  #   paths:
+  #     - ".github/workflows/golden-path-ci.yml"
+  workflow_run:
+    workflows: ["Todo Service CI"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  find_exercise:
+    name: Find Exercise Issue
+    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.9.3
+
+  check_step_work:
+    name: Check step work
+    runs-on: ubuntu-latest
+    needs: [find_exercise]
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Get response templates
+        uses: actions/checkout@v5
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.9.3
+
+      - name: Update comment - checking work
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/checking-work.md \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # START: Check practical exercise
+
+      - name: Check golden-path-ci.yml exists
+        id: check-file
+        continue-on-error: true
+        run: |
+          if [ ! -f ".github/workflows/golden-path-ci.yml" ]; then
+            echo "::error::Missing required file: .github/workflows/golden-path-ci.yml"
+            exit 1
+          fi
+          echo "golden-path-ci.yml present."
+
+      - name: Validate YAML syntax
+        id: check-yaml
+        continue-on-error: true
+        run: |
+          python3 -c "
+          import yaml, sys
+          with open('.github/workflows/golden-path-ci.yml') as f:
+              yaml.safe_load(f)
+          print('YAML syntax valid.')
+          "
+
+      - name: Check terraform-apply job exists
+        id: check-apply-job
+        continue-on-error: true
+        run: |
+          if ! grep -q "terraform-apply" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml must contain a 'terraform-apply' job"
+            exit 1
+          fi
+          echo "terraform-apply job found."
+
+      - name: "Check OIDC permission (id-token: write)"
+        id: check-oidc-permission
+        continue-on-error: true
+        run: |
+          if ! grep -q "id-token" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml must declare 'id-token: write' permission for OIDC"
+            exit 1
+          fi
+          echo "id-token: write permission found."
+
+      - name: Check aws-actions/configure-aws-credentials is used
+        id: check-aws-action
+        continue-on-error: true
+        run: |
+          if ! grep -q "aws-actions/configure-aws-credentials" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml must use 'aws-actions/configure-aws-credentials' for OIDC authentication"
+            exit 1
+          fi
+          echo "aws-actions/configure-aws-credentials found."
+
+      - name: Check AWS_ROLE_ARN secret is referenced (not hardcoded)
+        id: check-role-arn
+        continue-on-error: true
+        run: |
+          if ! grep -q "aws_role_arn" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml must reference the aws_role_arn secret input via 'inputs.aws_role_arn' — never hardcode an ARN"
+            exit 1
+          fi
+          # Fail if an actual ARN is hardcoded
+          if grep -Eq "arn:aws:iam::[0-9]{12}:role/" .github/workflows/golden-path-ci.yml; then
+            echo "::error::A hardcoded IAM role ARN was found in golden-path-ci.yml — use the aws_role_arn secret input instead"
+            exit 1
+          fi
+          echo "aws_role_arn secret input referenced correctly."
+
+      - name: Check terraform apply command targets infra/stacks/dev
+        id: check-apply-command
+        continue-on-error: true
+        run: |
+          if ! grep -q "terraform apply" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml must include a 'terraform apply' step in the terraform-apply job"
+            exit 1
+          fi
+          if ! grep -q "infra/stacks/dev" .github/workflows/golden-path-ci.yml; then
+            echo "::error::The terraform-apply job must target 'infra/stacks/dev' as the working directory"
+            exit 1
+          fi
+          echo "terraform apply targets infra/stacks/dev."
+
+      - name: Check todo-service-ci.yml passes run_terraform_apply on push to main
+        id: check-caller
+        continue-on-error: true
+        run: |
+          if [ ! -f ".github/workflows/todo-service-ci.yml" ]; then
+            echo "::error::Missing required file: .github/workflows/todo-service-ci.yml"
+            exit 1
+          fi
+          if ! grep -q "run_terraform_apply" .github/workflows/todo-service-ci.yml; then
+            echo "::error::todo-service-ci.yml must pass the 'run_terraform_apply' input to the reusable workflow"
+            exit 1
+          fi
+          if ! grep -q "AWS_ROLE_ARN" .github/workflows/todo-service-ci.yml; then
+            echo "::error::todo-service-ci.yml must pass 'secrets.AWS_ROLE_ARN' to the reusable workflow"
+            exit 1
+          fi
+          echo "todo-service-ci.yml correctly passes run_terraform_apply and AWS_ROLE_ARN."
+
+      - name: Check service_url is captured and surfaced after apply
+        id: check-url-output
+        continue-on-error: true
+        run: |
+          if ! grep -q "terraform output" .github/workflows/golden-path-ci.yml; then
+            echo "::error::The terraform-apply job must capture the service_url using 'terraform output' after apply"
+            exit 1
+          fi
+          if ! grep -q "GITHUB_STEP_SUMMARY" .github/workflows/golden-path-ci.yml; then
+            echo "::error::The terraform-apply job must write the Load Balancer URL to GITHUB_STEP_SUMMARY so the student can find it"
+            exit 1
+          fi
+          echo "service_url is captured and written to GITHUB_STEP_SUMMARY."
+
+      - name: Check build-and-push job exists
+        id: check-build-push-job
+        continue-on-error: true
+        run: |
+          if ! grep -q "build-and-push" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml must contain a 'build-and-push' job to build and push Docker images to ECR"
+            exit 1
+          fi
+          echo "build-and-push job found."
+
+      - name: Check ECR login action is used
+        id: check-ecr-login
+        continue-on-error: true
+        run: |
+          if ! grep -q "amazon-ecr-login" .github/workflows/golden-path-ci.yml; then
+            echo "::error::The build-and-push job must use 'aws-actions/amazon-ecr-login' to authenticate with ECR"
+            exit 1
+          fi
+          echo "amazon-ecr-login action found."
+
+      - name: Check docker build and push commands are present
+        id: check-docker-commands
+        continue-on-error: true
+        run: |
+          if ! grep -q "docker build" .github/workflows/golden-path-ci.yml; then
+            echo "::error::The build-and-push job must include 'docker build' commands for the backend and frontend images"
+            exit 1
+          fi
+          if ! grep -q "docker push" .github/workflows/golden-path-ci.yml; then
+            echo "::error::The build-and-push job must include 'docker push' commands to push images to ECR"
+            exit 1
+          fi
+          echo "docker build and docker push commands found."
+
+      - name: Check ECS force-new-deployment is triggered
+        id: check-ecs-deploy
+        continue-on-error: true
+        run: |
+          if ! grep -q "update-service" .github/workflows/golden-path-ci.yml; then
+            echo "::error::The build-and-push job must call 'aws ecs update-service --force-new-deployment' to deploy the new images to ECS"
+            exit 1
+          fi
+          echo "ECS update-service step found."
+
+      - name: Check todo-service-ci.yml passes build_and_push on push to main
+        id: check-caller-build-push
+        continue-on-error: true
+        run: |
+          if ! grep -q "build_and_push" .github/workflows/todo-service-ci.yml; then
+            echo "::error::todo-service-ci.yml must pass the 'build_and_push' input to the reusable workflow"
+            exit 1
+          fi
+          echo "todo-service-ci.yml correctly passes build_and_push."
+
+      - name: Check Todo Service CI run exists on this PR
+        id: check-terraform-plan-run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [ -z "$PR_NUMBER" ] && [ "${{ github.event_name }}" = "workflow_run" ]; then
+            PR_NUMBER=$(echo '${{ toJSON(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')
+          fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR number available (workflow_dispatch) — skipping run check."
+            exit 0
+          fi
+
+          HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')
+          echo "PR head SHA: $HEAD_SHA"
+
+          RUN_CONCLUSION=$(gh run list \
+            --workflow "todo-service-ci.yml" \
+            --commit "$HEAD_SHA" \
+            --json conclusion \
+            --jq '.[0].conclusion' 2>/dev/null || echo "")
+
+          if [ -n "$RUN_CONCLUSION" ]; then
+            echo "Todo Service CI run found on this PR (conclusion: $RUN_CONCLUSION)."
+            exit 0
+          fi
+
+          echo "::warning::Todo Service CI run not found yet for this PR head SHA. Push your changes or wait for CI to start, then re-trigger this check if needed."
+          exit 0
+
+      - name: Build message - step results
+        id: build-message-step-results
+        uses: skills/action-text-variables@v4
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-results-table.md
+          template-vars: |
+            step_number: PE-3
+            passed: ${{ steps.check-file.outcome == 'success' && steps.check-yaml.outcome == 'success' && steps.check-apply-job.outcome == 'success' && steps.check-oidc-permission.outcome == 'success' && steps.check-aws-action.outcome == 'success' && steps.check-role-arn.outcome == 'success' && steps.check-apply-command.outcome == 'success' && steps.check-caller.outcome == 'success' && steps.check-url-output.outcome == 'success' && steps.check-build-push-job.outcome == 'success' && steps.check-ecr-login.outcome == 'success' && steps.check-docker-commands.outcome == 'success' && steps.check-ecs-deploy.outcome == 'success' && steps.check-caller-build-push.outcome == 'success' }}
+            results_table:
+              - description: "golden-path-ci.yml exists"
+                passed: ${{ steps.check-file.outcome == 'success' }}
+              - description: "Workflow YAML syntax valid"
+                passed: ${{ steps.check-yaml.outcome == 'success' }}
+              - description: "terraform-apply job present in golden-path-ci.yml"
+                passed: ${{ steps.check-apply-job.outcome == 'success' }}
+              - description: "id-token: write permission declared for OIDC"
+                passed: ${{ steps.check-oidc-permission.outcome == 'success' }}
+              - description: "aws-actions/configure-aws-credentials action used"
+                passed: ${{ steps.check-aws-action.outcome == 'success' }}
+              - description: "ARN passed via secret input (not hardcoded)"
+                passed: ${{ steps.check-role-arn.outcome == 'success' }}
+              - description: "terraform apply targets infra/stacks/dev"
+                passed: ${{ steps.check-apply-command.outcome == 'success' }}
+              - description: "todo-service-ci.yml passes run_terraform_apply and AWS_ROLE_ARN"
+                passed: ${{ steps.check-caller.outcome == 'success' }}
+              - description: "Load Balancer URL captured and written to Actions summary"
+                passed: ${{ steps.check-url-output.outcome == 'success' }}
+              - description: "build-and-push job present in golden-path-ci.yml"
+                passed: ${{ steps.check-build-push-job.outcome == 'success' }}
+              - description: "ECR login action used in build-and-push job"
+                passed: ${{ steps.check-ecr-login.outcome == 'success' }}
+              - description: "docker build and docker push commands present"
+                passed: ${{ steps.check-docker-commands.outcome == 'success' }}
+              - description: "ECS force-new-deployment triggered after image push"
+                passed: ${{ steps.check-ecs-deploy.outcome == 'success' }}
+              - description: "todo-service-ci.yml passes build_and_push input"
+                passed: ${{ steps.check-caller-build-push.outcome == 'success' }}
+              - description: "Todo Service CI run exists on this PR"
+                passed: ${{ steps.check-terraform-plan-run.outcome == 'success' }}
+
+      - name: Create comment - step results
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$COMMENT_BODY" \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ steps.build-message-step-results.outputs.updated-text }}
+
+      - name: Fail job if required checks failed
+        if: |
+          steps.check-file.outcome != 'success' ||
+          steps.check-yaml.outcome != 'success' ||
+          steps.check-apply-job.outcome != 'success' ||
+          steps.check-oidc-permission.outcome != 'success' ||
+          steps.check-aws-action.outcome != 'success' ||
+          steps.check-role-arn.outcome != 'success' ||
+          steps.check-apply-command.outcome != 'success' ||
+          steps.check-caller.outcome != 'success' ||
+          steps.check-url-output.outcome != 'success' ||
+          steps.check-build-push-job.outcome != 'success' ||
+          steps.check-ecr-login.outcome != 'success' ||
+          steps.check-docker-commands.outcome != 'success' ||
+          steps.check-ecs-deploy.outcome != 'success' ||
+          steps.check-caller-build-push.outcome != 'success'
+        run: exit 1
+
+      # END: Check practical exercise
+
+      - name: Build message - step finished
+        id: build-message-step-finish
+        uses: skills/action-text-variables@v4
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-finished-prepare-next-step.md
+          template-vars: |
+            next_step_number: PE-4
+
+      - name: Update comment - step finished
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$ISSUE_BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_BODY: ${{ steps.build-message-step-finish.outputs.updated-text }}
+
+  post_next_step_content:
+    name: Post next step content
+    needs: [find_exercise, check_step_work]
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get response templates
+        uses: actions/checkout@v5
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.9.3
+
+      - name: Create comment - add step content
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file ".github/steps/pe-4-open-pr.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create comment - watching for progress
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Disable current workflow and enable next one
+        run: |
+          gh workflow disable "3-pe-terraform-apply.yml"
+          gh workflow enable "4-pe-open-pr.yml"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

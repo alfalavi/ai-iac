@@ -1,0 +1,49 @@
+name: "Scoreboard: Post Completion"
+
+on:
+  workflow_run:
+    workflows: ["Step PE-4 # Detect PR Opened — Open Review"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  find_exercise:
+    name: Find Exercise Issue
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.9.3
+
+  record-completion:
+    name: Record Lab Completion
+    runs-on: ubuntu-latest
+    needs: [find_exercise]
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Post completion summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          body=$(cat <<BODY
+          ## Lab Complete!
+
+          Completed at: ${now}
+          Participant: @${ACTOR}
+
+          ### Summary
+          You shipped a mini golden path including:
+          - Terraform IaC module with policy checks
+          - Reusable GitHub Actions CI/CD pipeline
+          - CloudWatch alarms + Container Insights + runbook
+          - A documented PR with evidence
+
+          Share your PR link in the session Slack channel!
+          BODY
+          )
+          gh issue comment "$ISSUE_URL" --body "$body"

@@ -1,0 +1,361 @@
+name: "Step PE-2 # Detect CI Pipeline Complete"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/golden-path-ci.yml"
+      - ".github/workflows/todo-service-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  find_exercise:
+    name: Find Exercise Issue
+    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.9.3
+
+  check_step_work:
+    name: Check step work
+    runs-on: ubuntu-latest
+    needs: [find_exercise]
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get response templates
+        uses: actions/checkout@v5
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.9.3
+
+      - name: Update comment - checking work
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/checking-work.md \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # START: Check practical exercise
+
+      - name: Check required workflow files exist
+        id: check-workflow-files
+        continue-on-error: true
+        run: |
+          for f in ".github/workflows/golden-path-ci.yml" \
+                   ".github/workflows/todo-service-ci.yml"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required file: $f"
+              exit 1
+            fi
+          done
+          echo "Required workflow files present."
+
+      - name: Validate workflow YAML syntax
+        id: check-yaml-syntax
+        continue-on-error: true
+        run: |
+          python3 -c "
+          import yaml, sys
+          for f in ['.github/workflows/golden-path-ci.yml', '.github/workflows/todo-service-ci.yml']:
+              with open(f) as fh:
+                  yaml.safe_load(fh)
+              print(f + ': valid YAML')
+          "
+
+      - name: Check golden-path-ci uses workflow_call
+        id: check-workflow-call
+        continue-on-error: true
+        run: |
+          if ! grep -q "workflow_call" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml must use 'on: workflow_call'"
+            exit 1
+          fi
+          echo "workflow_call trigger found."
+
+      - name: Check todo-service-ci uses the reusable workflow
+        id: check-uses-reference
+        continue-on-error: true
+        run: |
+          if ! grep -q "uses:" .github/workflows/todo-service-ci.yml; then
+            echo "::error::todo-service-ci.yml must call the reusable workflow via 'uses:'"
+            exit 1
+          fi
+          echo "uses: reference found."
+
+      - name: Validate workflows can run successfully
+        id: validate-workflow-execution
+        continue-on-error: true
+        run: |
+          echo "Validating workflow execution capabilities..."
+
+          # Check if golden-path-ci.yml has required jobs structure
+          if ! grep -q "jobs:" .github/workflows/golden-path-ci.yml; then
+            echo "::error::golden-path-ci.yml missing jobs section"
+            exit 1
+          fi
+
+          # Check if todo-service-ci.yml has required trigger events
+          if ! grep -q "on:" .github/workflows/todo-service-ci.yml; then
+            echo "::error::todo-service-ci.yml missing trigger events"
+            exit 1
+          fi
+
+          # Validate workflow references are correct
+          if grep -q "uses:" .github/workflows/todo-service-ci.yml; then
+            WORKFLOW_REF=$(grep "uses:" .github/workflows/todo-service-ci.yml | head -1 | sed 's/.*uses: *//' | sed 's/ .*//')
+            if [[ "$WORKFLOW_REF" == *"golden-path-ci.yml"* ]]; then
+              echo "✓ todo-service-ci.yml correctly references golden-path-ci.yml"
+            else
+              echo "::error::todo-service-ci.yml does not reference golden-path-ci.yml correctly"
+              exit 1
+            fi
+          fi
+
+          # Test workflow syntax with GitHub CLI if available
+          if command -v gh &> /dev/null; then
+            echo "Testing workflow syntax validation..."
+            for workflow in ".github/workflows/golden-path-ci.yml" ".github/workflows/todo-service-ci.yml"; do
+              if gh workflow view "$(basename "$workflow")" --repo="$GITHUB_REPOSITORY" &> /dev/null; then
+                echo "✓ $workflow is valid and recognized by GitHub"
+              else
+                echo "⚠️  $workflow may have syntax issues or is not yet recognized"
+              fi
+            done
+          fi
+
+          echo "Workflow execution validation completed successfully."
+
+      - name: Build message - step results
+        id: build-message-step-results
+        uses: skills/action-text-variables@v4
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-results-table.md
+          template-vars: |
+            step_number: PE-2
+            passed: ${{ steps.check-workflow-files.outcome == 'success' && steps.check-yaml-syntax.outcome == 'success' && steps.check-workflow-call.outcome == 'success' && steps.check-uses-reference.outcome == 'success' && steps.validate-workflow-execution.outcome == 'success' }}
+            results_table:
+              - description: "Required workflow files present (golden-path-ci.yml, todo-service-ci.yml)"
+                passed: ${{ steps.check-workflow-files.outcome == 'success' }}
+              - description: "Workflow YAML syntax is valid"
+                passed: ${{ steps.check-yaml-syntax.outcome == 'success' }}
+              - description: "golden-path-ci.yml uses workflow_call trigger"
+                passed: ${{ steps.check-workflow-call.outcome == 'success' }}
+              - description: "todo-service-ci.yml calls the reusable workflow via uses:"
+                passed: ${{ steps.check-uses-reference.outcome == 'success' }}
+              - description: "Workflows can run successfully and are properly configured"
+                passed: ${{ steps.validate-workflow-execution.outcome == 'success' }}
+
+      - name: Create comment - step results
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$COMMENT_BODY" \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ steps.build-message-step-results.outputs.updated-text }}
+
+      - name: Create troubleshooting guidance for failed validations
+        if: |
+          steps.check-workflow-files.outcome != 'success' ||
+          steps.check-yaml-syntax.outcome != 'success' ||
+          steps.check-workflow-call.outcome != 'success' ||
+          steps.check-uses-reference.outcome != 'success' ||
+          steps.validate-workflow-execution.outcome != 'success'
+        run: |
+          cat >> troubleshooting_guide.md << 'EOF'
+          ## ❌ Workflow Validation Failed - Please Fix the Following Issues:
+
+          EOF
+
+          if [[ "${{ steps.check-workflow-files.outcome }}" != "success" ]]; then
+            cat >> troubleshooting_guide.md << 'EOF'
+          ### 🔴 Missing Required Files
+          **Issue**: One or both required workflow files are missing.
+
+          **Required Files**:
+          - `.github/workflows/golden-path-ci.yml` (reusable workflow)
+          - `.github/workflows/todo-service-ci.yml` (calling workflow)
+
+          **Fix**: Create both files in the `.github/workflows/` directory.
+
+          EOF
+          fi
+
+          if [[ "${{ steps.check-yaml-syntax.outcome }}" != "success" ]]; then
+            cat >> troubleshooting_guide.md << 'EOF'
+          ### 🔴 Invalid YAML Syntax
+          **Issue**: One or both workflow files have invalid YAML syntax.
+
+          **Fix**: 
+          1. Check YAML indentation (use spaces, not tabs)
+          2. Validate YAML syntax using an online YAML validator
+          3. Ensure proper key-value pairs and list structures
+
+          EOF
+          fi
+
+          if [[ "${{ steps.check-workflow-call.outcome }}" != "success" ]]; then
+            cat >> troubleshooting_guide.md << 'EOF'
+          ### 🔴 Missing workflow_call Trigger
+          **Issue**: `golden-path-ci.yml` must use `workflow_call` trigger to be reusable.
+
+          **Fix**: Add this to the top of `golden-path-ci.yml`:
+          ```yaml
+          name: Golden Path CI
+          on:
+            workflow_call:
+          ```
+
+          EOF
+          fi
+
+          if [[ "${{ steps.check-uses-reference.outcome }}" != "success" ]]; then
+            cat >> troubleshooting_guide.md << 'EOF'
+          ### 🔴 Missing Workflow Reference
+          **Issue**: `todo-service-ci.yml` must call the reusable workflow using `uses:`.
+
+          **Fix**: Add a job in `todo-service-ci.yml` like this:
+          ```yaml
+          jobs:
+            call-golden-path:
+              uses: ./.github/workflows/golden-path-ci.yml
+          ```
+
+          EOF
+          fi
+
+          if [[ "${{ steps.validate-workflow-execution.outcome }}" != "success" ]]; then
+            cat >> troubleshooting_guide.md << 'EOF'
+          ### 🔴 Workflow Execution Issues
+          **Issue**: Workflows are not properly configured for execution.
+
+          **Common Problems**:
+          1. Missing `jobs:` section in `golden-path-ci.yml`
+          2. Missing `on:` trigger section in `todo-service-ci.yml`
+          3. Incorrect workflow reference path
+
+          **Fix**: 
+          1. Ensure `golden-path-ci.yml` has: `on: workflow_call` and `jobs:` section
+          2. Ensure `todo-service-ci.yml` has: `on:` triggers and calls the reusable workflow correctly
+          3. Check that the `uses:` path correctly references `./github/workflows/golden-path-ci.yml`
+
+          EOF
+          fi
+
+          cat >> troubleshooting_guide.md << 'EOF'
+
+          ---
+
+          ## 📝 Quick Reference Templates:
+
+          ### `golden-path-ci.yml` template:
+          ```yaml
+          name: Golden Path CI
+          on:
+            workflow_call:
+
+          jobs:
+            test:
+              runs-on: ubuntu-latest
+              steps:
+                - name: Checkout
+                  uses: actions/checkout@v5
+                # Add your CI steps here
+          ```
+
+          ### `todo-service-ci.yml` template:
+          ```yaml
+          name: Todo Service CI
+          on:
+            push:
+              branches: [ main ]
+            pull_request:
+              branches: [ main ]
+
+          jobs:
+            call-golden-path:
+              uses: ./.github/workflows/golden-path-ci.yml
+          ```
+
+          **Please fix the issues above and push your changes to continue.**
+          EOF
+
+          gh issue comment "$ISSUE_URL" --body-file troubleshooting_guide.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail job if required checks failed
+        if: |
+          steps.check-workflow-files.outcome != 'success' ||
+          steps.check-yaml-syntax.outcome != 'success' ||
+          steps.check-workflow-call.outcome != 'success' ||
+          steps.check-uses-reference.outcome != 'success' ||
+          steps.validate-workflow-execution.outcome != 'success'
+        run: exit 1
+
+      # END: Check practical exercise
+
+      - name: Build message - step finished
+        id: build-message-step-finish
+        uses: skills/action-text-variables@v4
+        with:
+          template-file: exercise-toolkit/markdown-templates/step-feedback/step-finished-prepare-next-step.md
+          template-vars: |
+            next_step_number: PE-3
+
+      - name: Update comment - step finished
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body "$ISSUE_BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_BODY: ${{ steps.build-message-step-finish.outputs.updated-text }}
+
+  post_next_step_content:
+    name: Post next step content
+    needs: [find_exercise, check_step_work]
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get response templates
+        uses: actions/checkout@v5
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.9.3
+
+      - name: Create comment - add step content
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file ".github/steps/pe-3-terraform-apply.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create comment - watching for progress
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Disable current workflow and enable next one
+        run: |
+          gh workflow disable "2-pe-ci-pipeline.yml"
+          gh workflow enable "3-pe-terraform-apply.yml"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

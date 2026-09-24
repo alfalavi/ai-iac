@@ -1,0 +1,14 @@
+{
+  "name": "copilot-bootcamp-session-pe",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/frontend",
+    "packages/backend"
+  ],
+  "scripts": {
+    "start": "npm run start --workspace=packages/backend",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  }
+}
