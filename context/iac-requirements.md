@@ -8,7 +8,7 @@
 
 ## Service Context
 
-<!-- Copilot: summarize what the todo-service is and how it will be hosted (from docs/project-overview.md) -->
+<!-- Copilot: The todo-service is a lightweight full-stack task manager with a React frontend and Express REST API for CRUD operations. In the golden path, it will be containerized and hosted on AWS ECS Fargate behind an Application Load Balancer, with CloudWatch logs and Container Insights for observability. -->
 
 ---
 
