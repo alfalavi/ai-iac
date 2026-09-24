@@ -1,0 +1,23 @@
+name: Todo Service CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  call-golden-path:
+    uses: ./.github/workflows/golden-path-ci.yml
+    with:
+      node_version: "20"
+      run_terraform_plan: true
+      run_terraform_apply: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      build_and_push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}

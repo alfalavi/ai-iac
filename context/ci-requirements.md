@@ -8,7 +8,7 @@
 
 ## Service Context
 
-<!-- Copilot: summarize the tech stack (Node.js version, test framework, IaC tool) that CI must validate (from docs/project-overview.md) -->
+CI must validate a Node.js 20 application using Jest for automated tests and Terraform for infrastructure provisioning and validation.
 
 ## Reusable Workflow (`golden-path-ci.yml`)
 
