@@ -36,14 +36,17 @@ This keeps validation consistent across teams while still allowing service-speci
 ### 1. `lint`
 
 Purpose:
+
 - install dependencies
 - run ESLint on both the backend and frontend
 
 Why it is required:
+
 - catches syntax errors, unused variables, invalid imports, and common code issues before tests or deploy steps run
 - ensures both application layers follow the repo’s code quality rules
 
 Implementation:
+
 - runs `npm install`
 - runs `npm run lint --workspace=packages/backend`
 - runs `npm run lint --workspace=packages/frontend`
@@ -53,15 +56,18 @@ Implementation:
 ### 2. `test`
 
 Purpose:
+
 - run the backend test suite with coverage enabled
 - publish the coverage summary to the workflow summary
 
 Why it is required:
+
 - this service is built with Jest
 - the requirements state that Jest coverage must fail below 80%
 - a low coverage threshold means regressions can slip through without detection
 
 Implementation:
+
 - installs dependencies with Node
 - runs `npm run test --workspace=packages/backend -- --coverage --coverageReporters=json-summary --coverageReporters=text-summary`
 - reads the generated summary and writes the results to `$GITHUB_STEP_SUMMARY`
@@ -71,14 +77,17 @@ Implementation:
 ### 3. `security-scan`
 
 Purpose:
+
 - run Checkov against the `infra/` directory
 
 Why it is required:
+
 - validates the Terraform configuration for common security and policy issues
 - catches risky IaC patterns before they reach AWS
 - aligns with the requirement to scan infrastructure as code
 
 Implementation:
+
 - installs Checkov with Python
 - runs `checkov -d infra --hard-fail-on HIGH`
 - only runs when `run_terraform_plan` is true
@@ -88,15 +97,18 @@ Implementation:
 ### 4. `terraform-plan`
 
 Purpose:
+
 - validate the Terraform configuration for the dev stack
 - generate a plan for the stack without requiring a full backend setup on pull requests
 
 Why it is required:
+
 - ensures infrastructure changes are syntactically valid and logically reviewable before merge
 - allows a pull request to verify Terraform changes without needing a real AWS backend on PR runs
 - catches config drift, invalid values, and broken references early
 
 Implementation details:
+
 - authenticates to AWS with OIDC via `aws-actions/configure-aws-credentials@v4`
 - installs the configured Terraform version
 - runs `terraform init -reconfigure -backend-config="key=todo-service/${{ github.repository_owner }}/dev/terraform.tfstate"`
@@ -106,6 +118,7 @@ Implementation details:
 - uploads the plan artifact for later use
 
 Important note:
+
 - the workflow intentionally uses `terraform init` with `-backend=false` in the earlier guidance for local validation, but the CI plan job in this repo configures the backend key for the actual dev stack plan.
 - the key point is that Terraform must be validated in CI and must not silently assume a local-only state file.
 
@@ -114,14 +127,17 @@ Important note:
 ### 5. `docker-build`
 
 Purpose:
+
 - build the backend and frontend containers on pull requests
 
 Why it is required:
+
 - validates that both Dockerfiles still build
 - catches broken build context, missing files, or bad Docker arguments before deployment
 - ensures the app remains containerizable without pushing images anywhere
 
 Implementation:
+
 - runs `docker build -f packages/backend/Dockerfile packages/backend/`
 - runs `docker build --build-arg REACT_APP_USERNAME=${{ github.actor }} -f packages/frontend/Dockerfile packages/frontend/`
 - runs only for pull requests and after lint + test pass
@@ -131,13 +147,16 @@ Implementation:
 ### 6. `terraform-apply`
 
 Purpose:
+
 - apply the dev stack when a push to `main` is approved by the workflow input configuration
 
 Why it is required:
+
 - enables the infrastructure to be deployed to AWS through OIDC
 - gates production-like deployment behind a controlled flag and a main-branch push
 
 Implementation:
+
 - requires `run_terraform_apply` to be true
 - uses OIDC credentials and the `aws_role_arn` secret
 - downloads the Terraform plan artifact
@@ -149,17 +168,20 @@ Implementation:
 ### 7. `build-and-push`
 
 Purpose:
+
 - authenticate to Amazon ECR
 - build the backend and frontend images
 - push them to ECR
 - trigger an ECS service update
 
 Why it is required:
+
 - ensures the built containers are actually shipped to the registry for deployment
 - aligns with the golden path pattern for containerized deployment
 - keeps a versioned image and a latest tag for the app
 
 Implementation:
+
 - requires `build_and_push` to be true
 - resolves the ECR repository URLs from Terraform outputs
 - logs in to Amazon ECR
@@ -203,6 +225,7 @@ jobs:
 This is the exact adoption pattern already used in `.github/workflows/todo-service-ci.yml`.
 
 What the caller is doing:
+
 - defines the repo trigger policy
 - chooses the Node.js version
 - enables Terraform planning for PRs
@@ -214,49 +237,64 @@ What the caller is doing:
 ## What each required check validates
 
 ### Lint
+
 Validates:
+
 - JS/JSX correctness
 - static quality issues
 - broken code patterns before runtime
 
 Why required:
+
 - low-cost feedback loop
 - avoids failing later in the pipeline or in deployment
 
 ### Test
+
 Validates:
+
 - behavior of the backend code
 - code coverage level for regressions
 
 Why required:
+
 - this is the main behavior gate for the app
 - enforces the 80% threshold from the requirements
 
 ### Security scan
+
 Validates:
+
 - Terraform security posture
 - risky infrastructure definitions
 
 Why required:
+
 - infrastructure must be reviewed for security issues before deployment
 - prevents unsafe defaults from being promoted into AWS
 
 ### Terraform plan
+
 Validates:
+
 - Terraform syntax and module compatibility
 - state and provider configuration
 - resource changes that would be applied
 
 Why required:
+
 - confirms infrastructure changes are reviewable before apply
 - prevents accidental AWS modifications from an unreviewed config
 
 ### Docker build
+
 Validates:
+
 - container buildability
 - packaging correctness for each service component
 
 Why required:
+
 - ensures the app remains deployable in containers
 - catches build failures before the release path is attempted
 
@@ -294,6 +332,7 @@ The repo requirement is explicit: the secret must be configured in GitHub reposi
 The golden path workflow is the standard platform gate for application quality, infrastructure safety, and deployment readiness. It enforces the repo’s required checks in a consistent way, while the caller workflow is the simple service-specific entry point that decides when those checks run.
 
 For this service, the workflow is intentionally designed to:
+
 - validate app code on every PR
 - validate Terraform changes before merge
 - approve actual AWS deployment only from `main`
