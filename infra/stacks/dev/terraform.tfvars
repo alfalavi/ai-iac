@@ -11,4 +11,4 @@ aws_region = "us-east-1"
 #   curl -s checkip.amazonaws.com
 #   # then append /32, e.g. "203.0.113.42/32"
 #
-alb_ingress_cidr = "YOUR_IP/32"
+alb_ingress_cidr = "35.151.81.26/32"
